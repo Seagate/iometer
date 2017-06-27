@@ -1,3 +1,10 @@
+Seagate ZBD Iometer Fork
+========================
+
+This project is based on the open source Iometer project and was modified to add
+support for Zone Block Devices (ZBD). 
+
+Use this fork to test raw ZBD devices. 
 
 Iometer project
 ===============
