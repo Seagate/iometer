@@ -79,6 +79,10 @@ Target::Target()
 	outstanding_ios = 0;
 	spec.trans_per_conn = 0;
 	trans_left_in_conn = 0;
+#if defined (ENABLE_ZBD_FEATURE)	
+	grunt = NULL;
+#endif
+	
 }
 
 Target::~Target()

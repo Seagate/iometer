@@ -90,6 +90,10 @@ struct Transaction {
 	int target_id;
 	//
 	int request_number;	// each trans. holds its own index in the Transaction array
+#if defined (ENABLE_ZBD_FEATURE)
+	DWORD request_zone_index;
+	DWORD request_zbd_tgt_index;
+#endif
 	//
 	// these are set when a new transaction is started in a transaction slot
 	DWORD request_size;	// size of request posting

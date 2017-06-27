@@ -94,6 +94,8 @@
 #define		VERSION_DEBUG	""
 #endif
 
+#define		STX_VERSION		" STX v2.5 TB2"
+
 
 #if defined (__cplusplus)
 extern "C"
@@ -127,8 +129,8 @@ extern "C"
 //
 // NOTE: Do NOT use major version numbers >1900 - Doing so will cause problems loading ICF files
 
-#define IOVER_FILEVERSION				"1.1.0\0" // increment subminor to reflect a compatible fix
-#define IOVER_PRODUCTVERSION			"1.1.0\0" // subminor always stays 0 here
+#define IOVER_FILEVERSION				"1.1.2\0" // increment subminor to reflect a compatible fix
+#define IOVER_PRODUCTVERSION			"1.1.2\0" // subminor always stays 0 here
 
 // The integerized version of this macro utilizes 4 values, so just ignore the last one
 #define IOVER_FILEVERSION_INT			1,1,0,0 // increment subminor to reflect a compatible fix

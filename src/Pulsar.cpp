@@ -408,7 +408,10 @@ int CDECL main(int argc, char *argv[])
 	param.cpu_affinity = 0; // not specified or default
 	param.timer_type = TIMER_UNDEFINED; // use the default
 	param.disk_control = RAWDISK_VIEW_NOPART; // do not show raw disks with partitions
-
+#if defined (ENABLE_ZBD_FEATURE)
+	param.force_zbd = 0;
+	param.max_open_zones = 0;
+#endif 
 	// The manager's GetVersionString method is not available yet since it does not exist, 
 	// so we do away with the variable and have ParseParam rely directly on the source of 
 	// the strings in ioversion.h. Not too clean but functional...
@@ -420,6 +423,11 @@ int CDECL main(int argc, char *argv[])
 
 	manager = new Manager;
 
+#if defined (ENABLE_ZBD_FEATURE)
+	manager->force_zbd_flag = param.force_zbd;
+	manager->max_open_zones = param.max_open_zones;
+#endif 
+	
 #if !defined(DO_NOT_PARSE_BEFORE_MANAGER)
 	// Restore the param globals retrieved above back to the manager
 	// since the manager buffers were not available prior to the parse call.
@@ -627,7 +635,11 @@ CleanUp:
 
 void Banner()
 {
+#if defined (ENABLE_ZBD_FEATURE)
+	cout << "Dynamo version " << IOVER_FILEVERSION << VERSION_DEBUG << STX_VERSION << ", "; 
+#else
 	cout << "Dynamo version " << IOVER_FILEVERSION << VERSION_DEBUG << ", "; 
+#endif
 
 #if defined(IOMTR_CPU_I386)
 	cout << "i386";
@@ -782,6 +794,11 @@ void Syntax(const char *errmsg /*=NULL*/ )
 	cout << "                  Forces Dynamo to not use the high precision timer API"      << endl;
 	cout << "                  provided by the OS. Instead the RDTSC instruction (or"      << endl;
 	cout << "                  equivalent) of the CPU is used."                            << endl;
+#endif
+#if defined(ENABLE_ZBD_FEATURE)
+	cout << "              FORCE_ZBD"                                                      << endl;
+	cout << "                  Forces Dynamo to consider all Raw targets as Zoned "	   << endl;
+	cout << "                  Block Device (ZBD) "					   << endl;	
 #endif
 	cout << endl;
 
@@ -986,6 +1003,15 @@ static void ParseParam(int argc, char *argv[], struct dynamo_param *param)
 			continue;
 		}
 
+#if defined (ENABLE_ZBD_FEATURE)
+		if (strcasecmp(pcOption, "Z") == 0) {
+			if (argv[I])
+				param->max_open_zones = atoi(argv[I]);			
+			cout << "Dynamo will use " <<param->max_open_zones<< " as MAX open zones for ZBD targets." << endl;
+			continue;
+		}
+#endif
+
 #if defined(IOMTR_OS_LINUX) || defined(IOMTR_OSFAMILY_NETWARE) || defined(IOMTR_OS_OSX) || defined(IOMTR_OS_SOLARIS)
 		if (strcasecmp(pcOption, "X") == 0) {
 			if ((strlen(argv[I]) + strlen(param->manager_exclude_fs)) >= MAX_EXCLUDE_FILESYS) {
@@ -1018,6 +1044,13 @@ static void ParseParam(int argc, char *argv[], struct dynamo_param *param)
 					cout << "Dynamo will attempt to use the processor's high precision timer." << endl;
 				}
 				continue;				
+			}
+#endif
+#if defined (ENABLE_ZBD_FEATURE)
+			if (strcasecmp(argv[I], "FORCE_ZBD") == 0) {
+				cout << "Dynamo will consider all raw targets as ZBD disks." << endl;
+				param->force_zbd = 1;
+				continue;
 			}
 #endif
 			// Unknown flag

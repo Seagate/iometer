@@ -92,6 +92,10 @@
 #include "IOGrunt.h"
 #include "IOPort.h"
 #include "IOPerformance.h"
+#if defined (ENABLE_ZBD_FEATURE)
+#include "ZBDTarget.h"
+typedef vector<ZBDTarget> ZBDTargets;
+#endif
 
 #if defined(IOMTR_OSFAMILY_UNIX)
 #if defined(IOMTR_OS_LINUX)
@@ -147,7 +151,15 @@ class Manager {
 	BOOL is_destructive;
 	BOOL is_buffered;
 #endif				// IOMTR_OSFAMILY_UNIX
-
+#if defined (_GEN_LOG_FILE)
+		ofstream m_logFile;
+#endif
+#if defined (ENABLE_ZBD_FEATURE)
+	int force_zbd_flag;
+	int max_open_zones;
+	ZBDTargets m_ZBDTgts;
+	int AddZBDTarget(char * tgt_name); //returns index or -1 if failed. 
+#endif
       private:
 	 Message msg;		// Directional messages from Iometer.
 	Data_Message data_msg;	// Data messages from Iometer.
@@ -159,8 +171,7 @@ class Manager {
 	//SYSTEM_INFO   m_SystemInfo;
 	OSVERSIONINFO m_OsVersionInfo;
 #endif
-
-
+	
 	// Performance results functions and data.
 	void Report_Results(int which_perf);
 	void Get_Performance(int which_perf, int snapshot);

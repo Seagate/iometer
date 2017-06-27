@@ -1443,8 +1443,10 @@ BOOL ManagerList::LoadConfigPreprocess(const CString & infilename, BOOL * flags,
 		//   load map and it is unassigned, assign it this pointer"
 		loadmap.SetIfOneManager(mgr);
 	}
+#ifndef SEAGATE_NO_DYNAMO_LAUNCH
 	// Spawn any local managers that are missing.
 	loadmap.SpawnLocalManagers();
+#endif
 
 	return TRUE;
 }

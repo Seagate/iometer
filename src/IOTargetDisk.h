@@ -88,6 +88,7 @@
 #endif
 
 #define MAX_PARTITIONS	26
+#define ATA_IDENTIFY_BUFFER_SIZE	(512)
 
 // File names used to access a given drive.
 #define LOGICAL_DISK	":\\"
@@ -109,6 +110,8 @@
 #define SECTOR_SIZE						512
 LONG NWalertroutine(unsigned long, unsigned long, unsigned long, unsigned long);
 #endif
+
+
 
 //
 // Logical or physical disk drives.
@@ -155,7 +158,19 @@ class TargetDisk:public Target {
 	ReturnVal Write(LPVOID buffer, Transaction * trans);
 
 	// Set the offset to the next position on the disk (random or sequential).
+#if defined (ENABLE_ZBD_FEATURE)
+	BOOL is_ZBD_disk;
+	int  ZBD_tgt_idx;
+	int  ZBD_tgt_zone_index;
+	void Seek(BOOL random, BOOL is_write, DWORD request_size, DWORD user_alignment, DWORDLONG user_align_mask);
+	int GetZoneInformation(DWORDLONG& maxLba, DWORD& zones, DWORD& zoneSize); 
+	void CheckForZBD(char * ); 
+	bool IssueATAIDentify( );
+	bool IssueATAExecDevDiag ( );
+	bool IssueZBDWpReset ( );
+#else
 	void Seek(BOOL random, DWORD request_size, DWORD user_alignment, DWORDLONG user_align_mask);
+#endif
 
 	char file_name[MAX_NAME];
 
@@ -163,7 +178,6 @@ class TargetDisk:public Target {
 
 	 BOOL Set_Sizes(BOOL open_disk = TRUE);	// Get physical drive dimensions.
 	void Set_Sector_Info();
-
       private:
 
 	 CQAIO * io_cq;
@@ -208,6 +222,10 @@ class TargetDisk:public Target {
 	BOOL Look_For_Partitions();	// private member function to look for partitions on disk.
 	DWORDLONG Get_Partition_Size(char *, int);	// private member function to get the partition size.
 	DWORDLONG Get_Slice_Size(char *, int);	// private member function to get the slice size.
+#endif
+#if defined (ENABLE_ZBD_FEATURE)
+	unsigned char  IdentifyBuffer[ATA_IDENTIFY_BUFFER_SIZE];
+	bool	issueSPTI; 
 #endif
 };
 

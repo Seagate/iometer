@@ -80,6 +80,9 @@
 #include "IOCommon.h"
 #include "IOTest.h"
 #include "IOCQ.h"
+#if defined (ENABLE_ZBD_FEATURE)
+class Grunt;
+#endif
 
 class Target {
       public:
@@ -103,9 +106,16 @@ class Target {
 	DWORDLONG conn_start_time;
 	int outstanding_ios;
 	BOOL is_closing;
+#if defined (ENABLE_ZBD_FEATURE)
+	void SetParentWorker(Grunt * wrk) { this->grunt = wrk; }
+	Grunt * GetParentWorker() { return grunt; }
+#endif
+
 
       private:
-
+#if defined (ENABLE_ZBD_FEATURE)
+	Grunt *grunt;
+#endif
 };
 
 #endif				// !defined(TARGET_DEFINED)

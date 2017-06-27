@@ -280,6 +280,7 @@ BOOL CGalileoApp::InitInstance()
 	    + "\"" + iometer_path + NEW_WORKER_EXECUTABLE + "\"%s%s";
 
 	if (cmdline.GetConfigFile().IsEmpty()) {
+#ifndef SEAGATE_NO_DYNAMO_LAUNCH
 #ifndef	_DEBUG
 		// If the default config file exists, load it.
 		if (::GetFileAttributes(DEFAULT_CONFIG_FILE) != 0xFFFFFFFF) {
@@ -291,6 +292,7 @@ BOOL CGalileoApp::InitInstance()
 			LaunchDynamo();
 		}
 #endif
+#endif // SEAGATE_NO_DYNAMO_LAUNCH
 	} else {
 		// If a config file was specified on the command line, open it
 		OpenDocumentFile(cmdline.GetConfigFile());

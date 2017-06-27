@@ -111,6 +111,9 @@
     <ClCompile Include="..\IOPerformanceOSX.cpp">
       <Filter>non-Windows</Filter>
     </ClCompile>
+    <ClCompile Include="..\ZBDTarget.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\IOAccess.h">
@@ -208,6 +211,9 @@
     </ClInclude>
     <ClInclude Include="..\PulsarRC.h">
       <Filter>Resource Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\ZBDTarget.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

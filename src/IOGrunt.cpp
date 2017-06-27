@@ -97,6 +97,9 @@
 #include "IOCommon.h"
 #include "IOTargetDisk.h"
 #include "IOTargetTCP.h"
+#if defined (ENABLE_ZBD_FEATURE)
+#include "IOManager.h"
+#endif
 
 extern struct dynamo_param param;
 
@@ -469,6 +472,9 @@ BOOL Grunt::Set_Targets(int count, Target_Spec * target_specs)
 
 	// Initialize the specific targets.
 	for (int i = 0; i < count; i++) {
+#if defined (ENABLE_ZBD_FEATURE)
+		targets[i]->SetParentWorker(this);
+#endif 
 		if (!targets[i]->Initialize(&target_specs[i], io_cq))
 			return FALSE;
 	}
@@ -890,6 +896,16 @@ void Grunt::Record_IO(Transaction * transaction, DWORDLONG end_IO)
 
 	// Update the target's number of outstanding I/Os.
 	targets[transaction->target_id]->outstanding_ios--;
+#if defined (ENABLE_ZBD_FEATURE)		
+	if(!(transaction->is_read))
+	{
+		if ( ((TargetDisk *) targets[transaction->target_id])->is_ZBD_disk )
+		{	
+			GetIOManager()->m_ZBDTgts[transaction->request_zbd_tgt_index].UpdateZoneInformation (
+				transaction->request_zone_index, transaction->request_size);
+		}
+	}
+#endif
 
 	// Update the grunt's number of outstanding I/Os
 	outstanding_ios--;
@@ -1305,7 +1321,11 @@ void Grunt::Do_IOs()
 		if (IsType(target->spec.type, GenericDiskType)) {
 			((TargetDisk *) targets[target_id])->Seek(access_spec.Random(access_percent,
 										     (unsigned int)targets[target_id]->
-										     Rand(100)), size,
+											 Rand(100)), 
+#if defined (ENABLE_ZBD_FEATURE)
+											 !(transaction->is_read), 
+#endif
+											 size,
 								  user_alignment, user_align_mask);
 		}
 

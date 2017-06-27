@@ -76,6 +76,10 @@
 #include "IOTest.h"
 #include "IOTransfers.h"
 
+#if defined (ENABLE_ZBD_FEATURE)
+class Manager;
+#endif
+
 #if defined(IOMTR_SETTING_VI_SUPPORT)
 #include "VINic.h"
 #endif
@@ -167,6 +171,11 @@ class Grunt {
 	long long random_data_buffer_size;
 	unsigned char* random_data_buffer;
 
+#if defined (ENABLE_ZBD_FEATURE)
+	void SetIOManager(Manager * mgr) { this->IoMgr = mgr; } 
+	Manager * GetIOManager() { return IoMgr; }
+#endif
+
       private:
 	void Initialize_Results();
 
@@ -177,6 +186,10 @@ class Grunt {
 	Target **targets;
 	//
 	///////////////////////////////////////////////////////////////////////////
+
+#if defined (ENABLE_ZBD_FEATURE)
+	Manager * IoMgr;	
+#endif
 
 	// To process an I/O error with Record_IO(),
 	// pass in a zero for the end_IO time.

@@ -241,7 +241,7 @@ FONT 8, "MS Sans Serif"
 BEGIN
     ICON            IDR_MAINFRAME,IDC_STATIC,15,15,20,20
     CTEXT           "Iometer ",TVersion,54,10,145,8,SS_NOPREFIX
-    CTEXT           "Copyright (c) 1996-1999 Intel Corporation\nEnterprise Server Group\nSean Hefty, David Levine, and Fab Tillier\n\nOpen Source since 2001\nHosted at iometer.org and\nsourceforge.net/projects/iometer",IDC_STATIC,44,23,164,60
+    CTEXT           "SEAGATE LABS v2.5\nCopyright (c) 1996-1999 Intel Corporation\nEnterprise Server Group\nSean Hefty, David Levine, and Fab Tillier\n\nOpen Source since 2001\nHosted at iometer.org and\nsourceforge.net/projects/iometer",IDC_STATIC,44,23,164,65
     DEFPUSHBUTTON   "OK",IDOK,21,132,35,14
     PUSHBUTTON      "Intel Open Source License",BViewEULA,116,132,116,14,BS_CENTER | BS_VCENTER
     CTEXT           "Iometer is provided ""as-is,"" without warranty or guarantee of any kind.",IDC_STATIC,15,88,224,8

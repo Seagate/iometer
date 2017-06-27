@@ -416,7 +416,9 @@ typedef          __int32    int32_t;
 typedef unsigned __int32   uint32_t;
 typedef          __int16    int16_t;
 typedef unsigned __int16   uint16_t;
+#if !defined (ENABLE_ZBD_FEATURE) //Including <mutex> in ZBDTarget is causing this to error out. 
 typedef          __int8      int8_t;
+#endif
 typedef unsigned __int8     uint8_t;
 
 #ifndef LONG_PTR
@@ -558,6 +560,16 @@ typedef unsigned __int8     uint8_t;
 #define MAX_GUI_IOPS   ((uint32) -1) // max 32bit value
 
 #define LATENCY_BIN_SIZE 21
+
+#define M_BitN(n)   (1 << n)
+#define BIT0      (M_BitN(0))
+#define BIT1      (M_BitN(1))
+#define BIT2      (M_BitN(2))
+#define BIT3      (M_BitN(3))
+#define BIT4      (M_BitN(4))
+#define BIT5      (M_BitN(5))
+#define BIT6      (M_BitN(6))
+#define BIT7      (M_BitN(7))
 
 // ----------------------------------------------------------------------------
 #if defined(IOMTR_OSFAMILY_NETWARE) || defined(IOMTR_OSFAMILY_UNIX)
@@ -812,6 +824,10 @@ struct dynamo_param {
 	int login_port_number;
 	int timer_type;           // control timer used from cmdline
 	int disk_control;         // control what disk get displayed in iometer from cmdline
+#if defined (ENABLE_ZBD_FEATURE)
+	int force_zbd;
+	int max_open_zones;
+#endif
 };
 
 // ----------------------------------------------------------------------------

@@ -117,13 +117,41 @@
 #include "IOCommon.h"
 #include "IOTargetDisk.h"
 #include "IOAccess.h"
+#if defined (ENABLE_ZBD_FEATURE)
+#include "IOGrunt.h"
+#include "IOManager.h"
+#endif
 
 #if defined(IOMTR_OSFAMILY_WINDOWS)
 #include <initguid.h>
 #include <diskguid.h>
+#if defined (ENABLE_ZBD_FEATURE)
+#include <Ntddscsi.h>
+#include <devioctl.h>
+
+/**
+ * @brief Scsi passthrough context structure.
+ */
+
+typedef struct _tSPTIoContext {
+    uint64_t                    padding0;//allign on a 64bit address....should help some HBAs, but not required
+    SCSI_PASS_THROUGH_DIRECT    sptd;
+    uint64_t                    padding2;//can't have enough padding
+    uint8_t                     SenseBuffer[252]; // If we do auto-sense, we need to allocate 252 bytes, according to SPC-3.
+    DWORD                       SptBufLen;
+} tSPTIoContext;
+extern bool SendIoControl( char *device, DWORD control, LPVOID in,  DWORD size_in, LPVOID out, DWORD size_out);
+
+#define ZONED_FIELD_IDENT_OFFSET (69 * 2) //Word 69 but since we reference using byte pointer. 
+#define HOST_AWARE_FIELD (0x01) // 00 Not reported.  
+#define HOST_MANAGED_FIELD (0x02) // 0x03 is reserved. 
+#endif
+
 #endif
 
 #define _DISK_MSGS 0
+
+static int current_zone_idx = 0;
 
 #if defined(IOMTR_OSFAMILY_NETWARE)
 #include <assert.h>
@@ -197,7 +225,9 @@ TargetDisk::TargetDisk()
 		exit(1);
 	}
 #endif
-
+#if defined (ENABLE_ZBD_FEATURE)	
+	is_ZBD_disk = 0;
+#endif 
 	memset(&spec, 0, sizeof(spec));
 }
 
@@ -214,12 +244,12 @@ TargetDisk::~TargetDisk()
 BOOL TargetDisk::Initialize(Target_Spec * target_info, CQ * cq)
 {
 	BOOL retval;
-
 	io_cq = (CQAIO *) cq;
 #if defined(IOMTR_OSFAMILY_NETWARE) || defined(IOMTR_OSFAMILY_UNIX)
 	file_handle.iocq = (IOCQ *) io_cq->completion_queue;
 #endif
-	memcpy(&spec, target_info, sizeof(Target_Spec));
+
+	memcpy(&spec, target_info, sizeof(* target_info));
 
 	// Initializing logical disks.
 #if defined(IOMTR_OS_WIN32) || defined(IOMTR_OS_WIN64)
@@ -471,14 +501,217 @@ BOOL TargetDisk::Init_Physical(int drive)
 	snprintf(spec.name, MAX_NAME, "%s%i", PHYSICAL_DISK, drive);
 	strcpy(file_name, spec.name);
 #endif // USE_NEW_DISCOVERY_MECHANISM
+	BOOL retVal = true;
 	spec.type = PhysicalDiskType;
 	size = 0;
 	starting_position = 0;
 	offset = 0;
 	bytes_transferred = 0;
 
+	retVal = Set_Sizes();
+
+#if defined (ENABLE_ZBD_FEATURE)
+	if(GetParentWorker() != NULL)
+	{
+
+#if defined (OLD_WAY_OF_DOING_THINGS)
+
+		tSPTIoContext ioctx;		
+		CHAR  Identify_Buffer[IDENTIFY_BUFFER_SIZE];		
+
+		memset(&Identify_Buffer[0],0,IDENTIFY_BUFFER_SIZE);
+		memset(&ioctx,0,sizeof(tSPTIoContext));
+	
+		ioctx.SptBufLen = sizeof(tSPTIoContext);
+		ioctx.sptd.Length = sizeof(ioctx.sptd);
+		ioctx.sptd.PathId = 0;
+		ioctx.sptd.TargetId = 0;
+		ioctx.sptd.Lun = 0;
+		ioctx.sptd.CdbLength = 16;
+		ioctx.sptd.SenseInfoLength = 252;
+		//ioctx.sptd.SenseInfoOffset=0;
+		ioctx.sptd.SenseInfoOffset = (ULONG)((&ioctx.SenseBuffer[0] - (uint8_t*)&ioctx.sptd));
+		ioctx.sptd.DataIn=SCSI_IOCTL_DATA_IN;
+		ioctx.sptd.DataTransferLength=IDENTIFY_BUFFER_SIZE;
+		ioctx.sptd.TimeOutValue=5;
+		ioctx.sptd.DataBuffer=Identify_Buffer;
+		memset(ioctx.sptd.Cdb,0,16);
+		ioctx.sptd.Cdb[0] = 0x85; //SAT_ATA_16
+		//ioctx.sptd.Cdb[1] = (0x04 << 1) | 1; //SAT_PIO_DATA_IN
+		ioctx.sptd.Cdb[1] = (0x04 << 1); //SAT_PIO_DATA_IN
+		
+		ioctx.sptd.Cdb[2] = 0x08 | 0x06; //SAT_T_DIR_DATA_IN;
+		ioctx.sptd.Cdb[6] = 0x01; //1 sec. to make some chipsets happy. 
+		ioctx.sptd.Cdb[14] = 0xEC;
+
+		if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
+		{
+			if(ioctx.sptd.ScsiStatus)
+			{
+					cout << "SCSI Status shows ATA IDENTIFY failed for " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+					GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : SCSI Status shows ATA IDENTIFY failed for " << spec.name << endl;
+#endif
+			}
+#ifdef OLD_METHOD_HOST_AWARE
+			if(Identify_Buffer[298] & BIT7)
+#else // means ZAC ZONE STATE MACHINE			
+			if(
+				((Identify_Buffer[ZONED_FIELD_IDENT_OFFSET] & 0x03) == HOST_AWARE_FIELD) //Host aware. 
+			||  ((Identify_Buffer[ZONED_FIELD_IDENT_OFFSET] & 0x03) == HOST_MANAGED_FIELD) //Host managed.
+			)
+#endif
+			{
+				is_ZBD_disk = 1;		
+				ioctx.sptd.Length = sizeof(ioctx.sptd);
+				ioctx.sptd.PathId = 0;
+				ioctx.sptd.TargetId = 0;
+				ioctx.sptd.Lun = 0;
+				ioctx.sptd.CdbLength = 16;
+				ioctx.sptd.SenseInfoLength = 0;
+				ioctx.sptd.SenseInfoOffset=0;
+				ioctx.sptd.DataIn=SCSI_IOCTL_DATA_UNSPECIFIED;
+				ioctx.sptd.DataTransferLength=0;
+				ioctx.sptd.TimeOutValue=5;
+				ioctx.sptd.DataBuffer=NULL;
+				memset(ioctx.sptd.Cdb,0,16);
+				ioctx.sptd.Cdb[0] = 0x85; //SAT_ATA_16
+				ioctx.sptd.Cdb[1] = (0x03 << 1); //SAT_NON_DATA
+				ioctx.sptd.Cdb[1] |= 1; //Extend bit. 
+				ioctx.sptd.Cdb[2] = 0x00; //SAT_T_DIR_DATA_IN;
+#ifdef OLD_METHOD_HOST_AWARE
+				ioctx.sptd.Cdb[4] = 0x01; //Reset ALL zones. 
+				ioctx.sptd.Cdb[14] = 0x9A; // Write PTR reset cmd
+#else
+				ioctx.sptd.Cdb[3] = 0x01; //RESET ALL bit . Feature EXT
+				ioctx.sptd.Cdb[4] = 0x04; // Feature reg. RESET WRITE POINTER EXT ZM_ACTION
+				ioctx.sptd.Cdb[14] = 0x9F; // Write PTR reset command
+#endif
+				if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
+				{
+					if(ioctx.sptd.ScsiStatus)
+					{
+							cout << "SCSI Status shows RESET PTR CMD failed for " << spec.name << endl;
+		#if defined (_GEN_LOG_FILE)
+							GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : SCSI Status shows RESET PTR CMD failed for " << spec.name << endl;
+		#endif
+					}
+					else
+					{
+						cout << "ZBD reset wp SUCCESSFUL " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+						GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : ZBD reset wp SUCCESSFUL " << spec.name << endl;
+#endif
+					}
+				}
+				else
+				{
+					cout << "Error sending ZBD reset to drive " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+					GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : Error sending ZBD reset to drive " << spec.name << endl;
+#endif
+				}
+			}
+			else
+			{
+					printf("ATA Word 69=0x%02x, sending reset\n",Identify_Buffer[ZONED_FIELD_IDENT_OFFSET]);
+			}
+		}
+		else
+		{
+			cout << "SCSI PT SAT cmd ECh command failed to drive " << spec.name << endl;
+			cout << "Now trying ECh command to drive " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+			GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ 
+				<< " SCSI PT SAT cmd ECh command failed to drive " << spec.name << endl
+				<< "Now trying ECh command to drive " << spec.name << endl;
+#endif
+			int sz = 0;
+			uint8_t * cmdBuff = (uint8_t *) calloc(sizeof(ATA_PASS_THROUGH_EX) + 4 + IDENTIFY_BUFFER_SIZE, 1);		
+			sz = sizeof(ATA_PASS_THROUGH_EX) + 4  + IDENTIFY_BUFFER_SIZE;
+			ATA_PASS_THROUGH_EX * atapt = (ATA_PASS_THROUGH_EX *) cmdBuff;
+			atapt->Length = sizeof(ATA_PASS_THROUGH_EX);
+			atapt->AtaFlags = ATA_FLAGS_DATA_IN | ATA_FLAGS_DRDY_REQUIRED ;
+			atapt->DataTransferLength = IDENTIFY_BUFFER_SIZE;
+			atapt->DataBufferOffset = sizeof(ATA_PASS_THROUGH_EX) + 4 ;
+			atapt->TimeOutValue = 5;
+			
+			atapt->CurrentTaskFile[6] = 0xEC;		
+			if (SendIoControl(spec.name, IOCTL_ATA_PASS_THROUGH, cmdBuff,sz, cmdBuff, sz))
+			{
+				cout << "ATA ECh command SUCCESSFUL to drive " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+						GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " ATA ECh command SUCCESSFUL to drive " << spec.name << endl;
+#endif
+#ifdef OLD_METHOD_HOST_AWARE
+				if(cmdBuff[sizeof(ATA_PASS_THROUGH_EX) +4+298] & BIT7)
+#else
+				if((cmdBuff[sizeof(ATA_PASS_THROUGH_EX)+4+ZONED_FIELD_IDENT_OFFSET] & 0x03) == HOST_AWARE_FIELD) //Host aware. 
+#endif
+				{
+					cout << "ZBD Bit set in IDENTIFY Data " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+						GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " ZBD Bit set in IDENTIFY Data " << spec.name << endl;
+#endif
+					is_ZBD_disk = 1;
+					atapt->Length = sizeof(ATA_PASS_THROUGH_EX);
+#ifdef OLD_METHOD_HOST_AWARE
+					atapt->AtaFlags = ATA_FLAGS_DRDY_REQUIRED;
+#else
+					atapt->AtaFlags = ATA_FLAGS_DRDY_REQUIRED | ATA_FLAGS_48BIT_COMMAND;
+#endif
+					
+					atapt->DataTransferLength = 0;
+					atapt->DataBufferOffset = 0;
+					atapt->TimeOutValue = 5;
+#ifdef OLD_METHOD_HOST_AWARE
+					atapt->CurrentTaskFile[0] = 0x01; //Reset ALL zones. 
+					atapt->CurrentTaskFile[6] = 0x9A; // Write PTR reset cmd
+#else
+					atapt->PreviousTaskFile[0] = 0x01; //RESET ALL bit . Feature EXT
+					atapt->CurrentTaskFile[0] = 0x04; // Feature reg. RESET WRITE POINTER EXT ZM_ACTION
+					atapt->CurrentTaskFile[6] = 0x9F; // Write PTR reset command
+#endif
+
+					if (SendIoControl(spec.name, IOCTL_ATA_PASS_THROUGH, cmdBuff,atapt->Length, cmdBuff, atapt->Length))
+					{
+						cout << "ATA ZBD reset wp SUCCESSFUL " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+						GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << ": ATA ZBD reset wp SUCCESSFUL " << spec.name << endl;
+#endif
+					}
+					else
+					{
+						cout << "Error sending ATA ZBD reset to drive " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+						GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : Error sending ATA ZBD reset to drive " << spec.name << endl;
+#endif
+					}
+				}
+			}		
+			free (cmdBuff);
+		}
+
+		if ( is_ZBD_disk || GetParentWorker()->GetIOManager()->force_zbd_flag )
+		{
+			DWORDLONG diskSize = 0;
+			DWORD zones = 0;
+			DWORD zoneSize= 0; 
+			GetZoneInformation(diskSize, zones, zoneSize); 
+			ZBD_tgt_idx=GetParentWorker()->GetIOManager()->AddZBDTarget(drive);
+			GetParentWorker()->GetIOManager()->m_ZBDTgts[ZBD_tgt_idx].SetSizeInfo(zones,zoneSize, diskSize);
+			GetParentWorker()->GetIOManager()->m_ZBDTgts[ZBD_tgt_idx].InitZBDData();
+			is_ZBD_disk = 1; //in case of the force flag. 
+		}
+#endif
+
+	CheckForZBD (drive);
+
+	}
+#endif
+
 	// Getting information about the size of the drive.
-	return (Set_Sizes());
+	return (retVal);
 }
 
 #else
@@ -1727,17 +1960,55 @@ BOOL TargetDisk::Close(volatile TestState * test_state)
 //              This uses fast byte alignment code as long as the sector size is a power
 //              of two, otherwise it reverts to slower code.
 //
+#if defined (ENABLE_ZBD_FEATURE)
+void TargetDisk::Seek(BOOL random, BOOL is_write, DWORD request_size, DWORD user_alignment, DWORDLONG user_align_mask)
+#else
 void TargetDisk::Seek(BOOL random, DWORD request_size, DWORD user_alignment, DWORDLONG user_align_mask)
-{
+#endif
+{	
 	static DWORDLONG remainder;	// static for performance reasons
-
 	// Find out if this is a random seek.
 	if (random) {
 		// Set the offset to a random location on the disk.
 		offset = starting_position + Rand(size);
+#if defined (ENABLE_ZBD_FEATURE)
+		if( (is_write) && (is_ZBD_disk) )
+		{			
+			if(ZBD_tgt_idx >= 0)
+				GetParentWorker()->GetIOManager()->m_ZBDTgts[ZBD_tgt_idx].GetZBDRandWp(offset, ZBD_tgt_zone_index);
+			// else TODO: print some info to the debug error. 
+		}
+		else
+		{
+#if defined (_GEN_LOG_FILE)
+			if(GetParentWorker()->GetIOManager() != NULL)
+			{
+				GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << "Rand  , offset , " << hex << "0x" << offset  <<  endl;
+			}
+#endif
+		}
+#endif
+		
 	} else {
 		// Adjusting the offset pointer by the last number of bytes successfully transferred.
 		offset += (DWORDLONG) bytes_transferred;
+#if defined (ENABLE_ZBD_FEATURE)
+		if( (is_write) && (is_ZBD_disk) )
+		{			
+			if(ZBD_tgt_idx >= 0)			
+				GetParentWorker()->GetIOManager()->m_ZBDTgts[ZBD_tgt_idx].SetZBDSeqWp(offset, ZBD_tgt_zone_index);			
+			//TODO: Current design doesn't allow for error condition. 
+		}
+		else
+		{
+#if defined (_GEN_LOG_FILE)
+			if(GetParentWorker()->GetIOManager() != NULL)
+			{
+				GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << "Seq   , offset , " << hex << "0x" << offset  <<  endl;
+			}
+#endif
+		}
+#endif
 	}
 
 	switch (user_align_mask) {
@@ -1866,6 +2137,16 @@ ReturnVal TargetDisk::Read(LPVOID buffer, Transaction * trans)
 	cout << "Reading " << trans->size << " bytes from disk : "
 	    << spec.name << endl << "   Accessing : " << offset << endl;
 #endif
+#if defined (_GEN_LOG_FILE)
+	if(GetParentWorker() != NULL)
+	{
+		if(GetParentWorker()->GetIOManager()->m_logFile.is_open())
+		{
+			GetParentWorker()->GetIOManager()->m_logFile <<  __FUNCTION__ << " : Reading " << trans->size << " bytes from disk : "
+			<< spec.name << endl << "   Accessing : " << offset << endl;
+		}
+	}
+#endif
 
 	// Determining location of read to disk.
 	trans->asynchronous_io.Offset = (DWORD) offset;
@@ -1934,12 +2215,26 @@ ReturnVal TargetDisk::Write(LPVOID buffer, Transaction * trans)
 
 #if _DETAILS
 	cout << "Writing " << trans->size << " bytes to disk : " << spec.name
-	    << endl << "   Accessing : " << offset << endl;
+	    << endl << "   Accessing : " << dec << offset << hex << "  0x" << offset << endl;
+#endif
+#if defined (_GEN_LOG_FILE)
+	if(GetParentWorker() != NULL)
+	{
+		if(GetParentWorker()->GetIOManager()->m_logFile.is_open())
+		{
+			GetParentWorker()->GetIOManager()->m_logFile <<  __FUNCTION__ << " : Writing " << trans->size << " bytes to disk : " << spec.name
+			<< endl << "   Accessing : " << dec << offset << hex << " 0x" << offset << " LBA: " << dec << offset/512 << hex << " 0x" << offset/512 << endl;
+		}
+	}
 #endif
 
 	// Determining location of write to disk.
 	trans->asynchronous_io.Offset = (DWORD) offset;
 	trans->asynchronous_io.OffsetHigh = (DWORD) (offset >> 32);
+#if defined (ENABLE_ZBD_FEATURE)
+	trans->request_zone_index = ZBD_tgt_zone_index;
+	trans->request_zbd_tgt_index = ZBD_tgt_idx;
+#endif
 
 	// Writing information from the disk.
 	if (WriteFile(disk_file, buffer, trans->size, &bytes_transferred, &trans->asynchronous_io)) {
@@ -2165,3 +2460,294 @@ static unsigned long long getSizeOfPhysDisk(const char *devName)
 
 #endif				// Linux
 #endif				// UNIX
+
+#if defined (ENABLE_ZBD_FEATURE)
+int TargetDisk::GetZoneInformation(DWORDLONG& maxLba, DWORD& zones, DWORD& zoneSize)
+{
+		int status = 1;
+		tSPTIoContext ioctx;		
+		CHAR  ZoneInfoBuf[512];		
+
+		maxLba = (this->size / 512) - 1;
+		zoneSize = 0x80000; //524288 
+		zones = maxLba / zoneSize;
+		
+		memset(&ZoneInfoBuf[0],0,512);
+		memset(&ioctx,0,sizeof(tSPTIoContext));
+	
+		ioctx.SptBufLen = sizeof(tSPTIoContext);
+		ioctx.sptd.Length = sizeof(ioctx.sptd);
+		ioctx.sptd.PathId = 0;
+		ioctx.sptd.TargetId = 0;
+		ioctx.sptd.Lun = 0;
+		ioctx.sptd.CdbLength = 16;
+		ioctx.sptd.SenseInfoLength = 252;
+		//ioctx.sptd.SenseInfoOffset=0;
+		ioctx.sptd.SenseInfoOffset = (ULONG)((&ioctx.SenseBuffer[0] - (uint8_t*)&ioctx.sptd));
+		ioctx.sptd.DataIn=SCSI_IOCTL_DATA_IN;
+		ioctx.sptd.DataTransferLength=512;
+		ioctx.sptd.TimeOutValue=5;
+		ioctx.sptd.DataBuffer=ZoneInfoBuf;
+		memset(ioctx.sptd.Cdb,0,16);
+		ioctx.sptd.Cdb[0] = 0x85; //SAT_ATA_16		
+		ioctx.sptd.Cdb[1] = (0x06 << 1); //DMA IN 
+		ioctx.sptd.Cdb[1] |= 1; // Extend
+		
+		ioctx.sptd.Cdb[2] = 0x08 | 0x06; //SAT_T_DIR_DATA_IN;
+		ioctx.sptd.Cdb[6] = 0x01; //1 sec. to make some chipsets happy. 
+		ioctx.sptd.Cdb[14] = 0x4A; 
+
+		if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
+		{
+			if(ioctx.sptd.ScsiStatus == 0) //SUCCESS
+			{
+				zones = ( ( ZoneInfoBuf[3] << 24)  |
+							( ZoneInfoBuf[2] << 16)	|
+							( ZoneInfoBuf[1] << 8)	|
+							ZoneInfoBuf[0] );
+				zones = zones / 64;
+				zones = zones - 1 ; //Last zone is runt & can be of different size etc. 
+						
+				maxLba = ( 
+							( ( (DWORDLONG) ZoneInfoBuf[15] << 56) & 0xff00000000000000)  |
+							( ( (DWORDLONG) ZoneInfoBuf[14] << 48) & 0x00ff000000000000) 	|
+							( ( (DWORDLONG) ZoneInfoBuf[13] << 40) & 0x0000ff0000000000) 	|
+							( ( (DWORDLONG) ZoneInfoBuf[12] << 32) & 0x000000ff00000000)    |
+							( ( (DWORDLONG) ZoneInfoBuf[11] << 24) & 0x00000000ff000000) 	|
+							( ( (DWORDLONG) ZoneInfoBuf[10] << 16) & 0x0000000000ff0000) 	|
+							( ( (DWORDLONG) ZoneInfoBuf[9] << 8) & 0x000000000000ff00) 	|
+							( (DWORDLONG) ZoneInfoBuf[8] & 0x00000000000000ff) );			
+/*
+				zoneSize = ( 
+							( ( (DWORDLONG) ZoneInfoBuf[79] << 56) & 0xff00000000000000)  |
+							( ( (DWORDLONG) ZoneInfoBuf[78] << 48) & 0x00ff000000000000) 	|
+							( ( (DWORDLONG) ZoneInfoBuf[77] << 40) & 0x0000ff0000000000) 	|
+							( ( (DWORDLONG) ZoneInfoBuf[76] << 32) & 0x000000ff00000000)    |
+							( ( (DWORDLONG) ZoneInfoBuf[75] << 24) & 0x00000000ff000000) 	|
+							( ( (DWORDLONG) ZoneInfoBuf[74] << 16) & 0x0000000000ff0000) 	|
+							( ( (DWORDLONG) ZoneInfoBuf[73] << 8) & 0x000000000000ff00) 	|
+							( (DWORDLONG) ZoneInfoBuf[72] & 0x00000000000000ff) );
+
+				zoneSize = zoneSize & 0x0000ffffffffffff;
+*/
+				zoneSize = ( ( ZoneInfoBuf[75] << 24)  |
+							( ZoneInfoBuf[74] << 16)	|
+							( ZoneInfoBuf[73] << 8)	|
+							ZoneInfoBuf[72] );
+				status = 0;
+			}
+			else
+			{
+					cout << "SCSI Status shows Zone Information cmd  failed for " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+					GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : SCSI Status shows ATA IDENTIFY failed for " << spec.name << endl;
+#endif
+			}
+		}
+
+	return status; 
+}
+
+bool TargetDisk::IssueZBDWpReset ( ) 
+{
+	bool result = true; 
+	tSPTIoContext ioctx;						
+	memset(&ioctx,0,sizeof(tSPTIoContext));
+
+	ioctx.sptd.Length = sizeof(ioctx.sptd);
+	ioctx.sptd.PathId = 0;
+	ioctx.sptd.TargetId = 0;
+	ioctx.sptd.Lun = 0;
+	ioctx.sptd.CdbLength = 16;
+	ioctx.sptd.SenseInfoLength = 0;
+	ioctx.sptd.SenseInfoOffset=0;
+	ioctx.sptd.DataIn=SCSI_IOCTL_DATA_UNSPECIFIED;
+	ioctx.sptd.DataTransferLength=0;
+	ioctx.sptd.TimeOutValue=5;
+	ioctx.sptd.DataBuffer=NULL;
+	memset(ioctx.sptd.Cdb,0,16);
+	ioctx.sptd.Cdb[0] = 0x85; //SAT_ATA_16
+	ioctx.sptd.Cdb[1] = (0x03 << 1); //SAT_NON_DATA
+	ioctx.sptd.Cdb[1] |= 1; //Extend bit. 
+	ioctx.sptd.Cdb[2] = 0x00; //SAT_T_DIR_DATA_IN;
+	ioctx.sptd.Cdb[3] = 0x01; //RESET ALL bit . Feature EXT
+	ioctx.sptd.Cdb[4] = 0x04; // Feature reg. RESET WRITE POINTER EXT ZM_ACTION
+	ioctx.sptd.Cdb[14] = 0x9F; // Write PTR reset command
+
+	if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
+	{
+		if(ioctx.sptd.ScsiStatus)
+		{
+			result = false;
+			cout << "SCSI Status shows RESET PTR CMD failed for " << spec.name << endl;
+	#if defined (_GEN_LOG_FILE)
+			GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : SCSI Status shows RESET PTR CMD failed for " << spec.name << endl;
+	#endif
+		}
+		else
+		{
+			cout << "ZBD reset wp SUCCESSFUL " << spec.name << endl;
+	#if defined (_GEN_LOG_FILE)
+			GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : ZBD reset wp SUCCESSFUL " << spec.name << endl;
+	#endif
+		}
+	}
+	else
+	{
+		result = false;
+		cout << "Error sending ZBD reset to drive " << spec.name << endl;
+	#if defined (_GEN_LOG_FILE)
+		GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : Error sending ZBD reset to drive " << spec.name << endl;
+	#endif
+	}
+
+	return result; 
+}
+
+bool TargetDisk::IssueATAExecDevDiag ( ) 
+{
+	bool result = true; 
+	tSPTIoContext ioctx;						
+	memset(&ioctx,0,sizeof(tSPTIoContext));
+
+	ioctx.SptBufLen = sizeof(tSPTIoContext);
+	ioctx.sptd.Length = sizeof(ioctx.sptd);
+	ioctx.sptd.PathId = 0;
+	ioctx.sptd.TargetId = 0;
+	ioctx.sptd.Lun = 0;
+	ioctx.sptd.CdbLength = 16;
+	ioctx.sptd.SenseInfoLength = 252;
+	//ioctx.sptd.SenseInfoOffset=0;
+	ioctx.sptd.SenseInfoOffset = (ULONG)((&ioctx.SenseBuffer[0] - (uint8_t*)&ioctx.sptd));
+	ioctx.sptd.DataIn=SCSI_IOCTL_DATA_UNSPECIFIED;
+	ioctx.sptd.DataTransferLength=0;
+	ioctx.sptd.TimeOutValue=5;
+	ioctx.sptd.DataBuffer=0;
+	memset(ioctx.sptd.Cdb,0,16);
+	ioctx.sptd.Cdb[0] = 0x85; //SAT_ATA_16
+	//ioctx.sptd.Cdb[1] = (0x04 << 1) | 1; //SAT_PIO_DATA_IN
+	ioctx.sptd.Cdb[1] = (0x09 << 1); //SAT_PIO_DATA_IN
+		
+	ioctx.sptd.Cdb[2] = 0x20 | 0x00; //SAT_T_DIR_DATA_IN;
+	ioctx.sptd.Cdb[14] = 0x90;
+	if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
+	{
+		if(ioctx.sptd.ScsiStatus == 0x02)
+		{
+		}
+		else
+		{
+		}
+	}
+	return result; 
+}
+
+bool TargetDisk::IssueATAIDentify( ) 
+{
+	bool result = true; 
+	tSPTIoContext ioctx;		
+
+	memset(&IdentifyBuffer[0],0,IDENTIFY_BUFFER_SIZE);
+	memset(&ioctx,0,sizeof(tSPTIoContext));
+	
+	ioctx.SptBufLen = sizeof(tSPTIoContext);
+	ioctx.sptd.Length = sizeof(ioctx.sptd);
+	ioctx.sptd.PathId = 0;
+	ioctx.sptd.TargetId = 0;
+	ioctx.sptd.Lun = 0;
+	ioctx.sptd.CdbLength = 16;
+	ioctx.sptd.SenseInfoLength = 252;
+	//ioctx.sptd.SenseInfoOffset=0;
+	ioctx.sptd.SenseInfoOffset = (ULONG)((&ioctx.SenseBuffer[0] - (uint8_t*)&ioctx.sptd));
+	ioctx.sptd.DataIn=SCSI_IOCTL_DATA_IN;
+	ioctx.sptd.DataTransferLength=IDENTIFY_BUFFER_SIZE;
+	ioctx.sptd.TimeOutValue=5;
+	ioctx.sptd.DataBuffer=IdentifyBuffer;
+	memset(ioctx.sptd.Cdb,0,16);
+	ioctx.sptd.Cdb[0] = 0x85; //SAT_ATA_16
+	//ioctx.sptd.Cdb[1] = (0x04 << 1) | 1; //SAT_PIO_DATA_IN
+	ioctx.sptd.Cdb[1] = (0x04 << 1); //SAT_PIO_DATA_IN
+		
+	ioctx.sptd.Cdb[2] = 0x08 | 0x06; //SAT_T_DIR_DATA_IN;
+	ioctx.sptd.Cdb[6] = 0x01; //1 sec. to make some chipsets happy. 
+	ioctx.sptd.Cdb[14] = 0xEC;
+	if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
+	{
+		if(ioctx.sptd.ScsiStatus)
+		{
+			result = false; 
+			cout << "SCSI Status shows ATA IDENTIFY failed for " << spec.name << endl;
+	#if defined (_GEN_LOG_FILE)
+			GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : SCSI Status shows ATA IDENTIFY failed for " << spec.name << endl;
+	#endif
+		}
+	}
+	else
+	{
+		issueSPTI = false;
+		cout << "SCSI PT SAT cmd ECh command failed to drive " << spec.name << endl;
+		cout << "Now trying ECh command to drive " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+		GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ 
+			<< " SCSI PT SAT cmd ECh command failed to drive " << spec.name << endl
+			<< "Now trying ECh command to drive " << spec.name << endl;
+#endif
+		int sz = 0;
+		uint8_t * cmdBuff = (uint8_t *) calloc(sizeof(ATA_PASS_THROUGH_EX) + 4 + IDENTIFY_BUFFER_SIZE, 1);		
+		sz = sizeof(ATA_PASS_THROUGH_EX) + 4  + IDENTIFY_BUFFER_SIZE;
+		ATA_PASS_THROUGH_EX * atapt = (ATA_PASS_THROUGH_EX *) cmdBuff;
+		atapt->Length = sizeof(ATA_PASS_THROUGH_EX);
+		atapt->AtaFlags = ATA_FLAGS_DATA_IN | ATA_FLAGS_DRDY_REQUIRED ;
+		atapt->DataTransferLength = IDENTIFY_BUFFER_SIZE;
+		atapt->DataBufferOffset = sizeof(ATA_PASS_THROUGH_EX) + 4 ;
+		atapt->TimeOutValue = 5;			
+		
+		atapt->CurrentTaskFile[6] = 0xEC;		
+
+		if (SendIoControl(spec.name, IOCTL_ATA_PASS_THROUGH, cmdBuff,sz, cmdBuff, sz))
+		{
+			result = true;
+			cout << "ATA ECh command SUCCESSFUL to drive " << spec.name << endl;
+#if defined (_GEN_LOG_FILE)
+					GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " ATA ECh command SUCCESSFUL to drive " << spec.name << endl;
+#endif
+		}
+		free (cmdBuff);
+	}
+
+	return result;
+}
+
+void TargetDisk::CheckForZBD( char * drive )
+{
+	if ( IssueATAIDentify ( ) ) 
+	{
+		if(	(IdentifyBuffer[ZONED_FIELD_IDENT_OFFSET] & 0x03) == HOST_AWARE_FIELD) //Host aware. 				
+		{
+			is_ZBD_disk = 1;
+		}
+		else
+		{
+			printf("ATA Word 69=0x%02x, sending reset\n",IdentifyBuffer[ZONED_FIELD_IDENT_OFFSET]);
+		}
+	}
+	if ( ! is_ZBD_disk )
+	{
+		IssueATAExecDevDiag ();
+	}
+
+	if ( is_ZBD_disk || GetParentWorker()->GetIOManager()->force_zbd_flag )
+	{
+		DWORDLONG diskSize = 0;
+		DWORD zones = 0;
+		DWORD zoneSize= 0; 
+
+		IssueZBDWpReset ( );
+		GetZoneInformation(diskSize, zones, zoneSize); 
+		ZBD_tgt_idx=GetParentWorker()->GetIOManager()->AddZBDTarget(drive);
+		GetParentWorker()->GetIOManager()->m_ZBDTgts[ZBD_tgt_idx].SetSizeInfo(zones,zoneSize, diskSize);
+		GetParentWorker()->GetIOManager()->m_ZBDTgts[ZBD_tgt_idx].InitZBDData();
+		is_ZBD_disk = 1; //in case of the force flag. 
+	}
+}
+#endif

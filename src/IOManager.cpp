@@ -168,6 +168,30 @@ Manager::Manager()
 	}
 #endif
 
+#if defined (_GEN_LOG_FILE)
+	if(m_logFile.is_open())
+		m_logFile.close();
+
+	time_t t = time(0);
+	struct tm * now = localtime (&t);
+	char buffer[80];
+	strftime(buffer,80,"mgr-zbdio-logfile-%Y-%m-%d-%H-%M-%S",now);
+	m_logFile.open(buffer);	
+	printf("\n\tLog file created %s\n\n",buffer);
+#ifdef _DEBUG		
+	m_logFile << endl << "Dynamo version " << IOVER_FILEVERSION << VERSION_DEBUG << STX_VERSION << endl; 
+#else
+	m_logFile << endl << "Dynamo version " << IOVER_FILEVERSION << STX_VERSION << endl; 
+#endif
+
+#endif
+
+#if defined (ENABLE_ZBD_FEATURE)
+	m_ZBDTgts.clear();
+	max_open_zones = 0;
+	force_zbd_flag = 0;
+#endif
+
 }
 
 //
@@ -203,6 +227,14 @@ Manager::~Manager()
 
 	for (g = 0; g < grunt_count; g++)
 		delete grunts[g];
+#if defined (_GEN_LOG_FILE)
+	m_logFile <<  __FUNCTION__ << "    Closing log file." << endl;
+	if (m_logFile.is_open())
+		m_logFile.close();
+#endif
+#if defined (ENABLE_ZBD_FEATURE)
+	m_ZBDTgts.clear();
+#endif
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1408,6 +1440,9 @@ void Manager::Add_Workers(int count)
 		// Create a new grunt.
 		if (!(grunts[grunt_count] = new Grunt))
 			break;
+#if defined (ENABLE_ZBD_FEATURE)
+		grunts[grunt_count]->SetIOManager(this);
+#endif
 
 		// Assign grunt to manager's data buffer by default.
 		grunts[grunt_count]->read_data = data;
@@ -1435,3 +1470,35 @@ void Manager::Add_Workers(int count)
 
 	prt->Send(&msg);
 }
+
+#if defined (ENABLE_ZBD_FEATURE)
+ //returns index or -1 if failed. 
+int Manager::AddZBDTarget(char * tgt_name)
+{
+	int i = 0; 
+
+	for (vector<ZBDTarget>::iterator it = m_ZBDTgts.begin(); it != m_ZBDTgts.end(); ++it)
+	{
+		//If it is the right ZBD target
+		if (memcmp( (*it).GetName(),tgt_name,sizeof(tgt_name)) == 0)
+		{
+			//Do we need to reset the list? i.e. start of a new test?
+			if ((*it).need_reset)
+			{
+				(*it).InitZBDData();
+			}
+			return i;
+		}
+		i++;
+	}
+
+	ZBDTarget * newZBDTgt = new ZBDTarget();
+	newZBDTgt->SetName(tgt_name);
+	newZBDTgt->SetIOManager(this);
+	//newZBDTgt->InitZBDData();
+	m_ZBDTgts.push_back(*newZBDTgt) ;
+	delete newZBDTgt;
+	
+	return m_ZBDTgts.size()-1;
+}
+#endif
