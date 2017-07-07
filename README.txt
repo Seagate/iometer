@@ -6,6 +6,9 @@ support for Zone Block Devices (ZBD).
 
 Use this fork to test raw ZBD devices. 
 
+Precompiled binaries can be found at the following link.
+https://apps1.seagate.com/downloads/certificate.html?key=1225460413050
+
 Iometer project
 ===============
 
