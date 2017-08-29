@@ -145,6 +145,10 @@ extern bool SendIoControl( char *device, DWORD control, LPVOID in,  DWORD size_i
 #define ZONED_FIELD_IDENT_OFFSET (69 * 2) //Word 69 but since we reference using byte pointer. 
 #define HOST_AWARE_FIELD (0x01) // 00 Not reported.  
 #define HOST_MANAGED_FIELD (0x02) // 0x03 is reserved. 
+#define ATA_EXEX_DEV_DIAG	(0x90)
+#define ATA_IDENTIFY		(0xEC)
+#define ZDB_RESET_WP		(0x9F)
+#define ZDB_ZAC_MANAGEMENT	(0x4A)
 #endif
 
 #endif
@@ -2214,16 +2218,15 @@ ReturnVal TargetDisk::Write(LPVOID buffer, Transaction * trans)
 #endif
 
 #if _DETAILS
-	cout << "Writing " << trans->size << " bytes to disk : " << spec.name
-	    << endl << "   Accessing : " << dec << offset << hex << "  0x" << offset << endl;
+	cout << "Writing " << dec <<  trans->size << " bytes to disk : " << spec.name << "   Accessing : " << dec << offset << hex << "  0x" << offset << endl;
 #endif
 #if defined (_GEN_LOG_FILE)
 	if(GetParentWorker() != NULL)
 	{
 		if(GetParentWorker()->GetIOManager()->m_logFile.is_open())
 		{
-			GetParentWorker()->GetIOManager()->m_logFile <<  __FUNCTION__ << " : Writing " << trans->size << " bytes to disk : " << spec.name
-			<< endl << "   Accessing : " << dec << offset << hex << " 0x" << offset << " LBA: " << dec << offset/512 << hex << " 0x" << offset/512 << endl;
+			GetParentWorker()->GetIOManager()->m_logFile <<  __FUNCTION__ << " : Writing " << dec << trans->size << " bytes to disk : " << spec.name
+			<< "   Accessing : " << dec << offset << hex << " 0x" << offset << " LBA: " << dec << offset/512 << hex << " 0x" << offset/512 << endl;
 		}
 	}
 #endif
@@ -2261,6 +2264,15 @@ ReturnVal TargetDisk::Write(LPVOID buffer, Transaction * trans)
 		// Return error code.
 		cout << "*** Error " << error_no << " writing " << trans->size
 		    << " bytes to disk " << spec.name << "." << endl;
+#if defined (_GEN_LOG_FILE)
+	if(GetParentWorker() != NULL)
+	{
+		if(GetParentWorker()->GetIOManager()->m_logFile.is_open())
+		{
+			GetParentWorker()->GetIOManager()->m_logFile <<  __FUNCTION__ << "*** Error " << error_no << " writing " << trans->size << " bytes to disk " << spec.name << "." << endl;
+		}
+	}
+#endif
 		return ReturnError;
 	}
 	// An asynchronous write was successfully initiated!  
@@ -2495,7 +2507,7 @@ int TargetDisk::GetZoneInformation(DWORDLONG& maxLba, DWORD& zones, DWORD& zoneS
 		
 		ioctx.sptd.Cdb[2] = 0x08 | 0x06; //SAT_T_DIR_DATA_IN;
 		ioctx.sptd.Cdb[6] = 0x01; //1 sec. to make some chipsets happy. 
-		ioctx.sptd.Cdb[14] = 0x4A; 
+		ioctx.sptd.Cdb[14] = ZDB_ZAC_MANAGEMENT; 
 
 		if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
 		{
@@ -2534,6 +2546,11 @@ int TargetDisk::GetZoneInformation(DWORDLONG& maxLba, DWORD& zones, DWORD& zoneS
 							( ZoneInfoBuf[74] << 16)	|
 							( ZoneInfoBuf[73] << 8)	|
 							ZoneInfoBuf[72] );
+
+				cout << __FUNCTION__ << " zones : " << zones << " zoneSize : " << zoneSize << " maxLBA " << maxLba << endl;
+				#if defined (_GEN_LOG_FILE)
+				GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " zones : " << zones << " zoneSize : " << zoneSize << " maxLBA " << maxLba << endl;
+				#endif
 				status = 0;
 			}
 			else
@@ -2572,7 +2589,7 @@ bool TargetDisk::IssueZBDWpReset ( )
 	ioctx.sptd.Cdb[2] = 0x00; //SAT_T_DIR_DATA_IN;
 	ioctx.sptd.Cdb[3] = 0x01; //RESET ALL bit . Feature EXT
 	ioctx.sptd.Cdb[4] = 0x04; // Feature reg. RESET WRITE POINTER EXT ZM_ACTION
-	ioctx.sptd.Cdb[14] = 0x9F; // Write PTR reset command
+	ioctx.sptd.Cdb[14] = ZDB_RESET_WP; // Write PTR reset command
 
 	if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
 	{
@@ -2604,9 +2621,13 @@ bool TargetDisk::IssueZBDWpReset ( )
 	return result; 
 }
 
+#define SCSI_SENSE_DESCRITOR_FMT	(0x72)
+#define SCSI_SENSE_ATA_DESC			(0x09)
+#define SCSI_SENSE_ATA_DESC_LEN		 (0x0C)
+
 bool TargetDisk::IssueATAExecDevDiag ( ) 
 {
-	bool result = true; 
+	bool result = false; 
 	tSPTIoContext ioctx;						
 	memset(&ioctx,0,sizeof(tSPTIoContext));
 
@@ -2629,15 +2650,39 @@ bool TargetDisk::IssueATAExecDevDiag ( )
 	ioctx.sptd.Cdb[1] = (0x09 << 1); //SAT_PIO_DATA_IN
 		
 	ioctx.sptd.Cdb[2] = 0x20 | 0x00; //SAT_T_DIR_DATA_IN;
-	ioctx.sptd.Cdb[14] = 0x90;
+	ioctx.sptd.Cdb[14] = ATA_EXEX_DEV_DIAG;
 	if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
 	{
+		result = true;
 		if(ioctx.sptd.ScsiStatus == 0x02)
 		{
+			printf("Sense Data: \n");
+			for(int i = 0; i < 20; i++)
+			{
+				printf(" %02X ",ioctx.SenseBuffer[i]);
+			}
+			printf("\n");
+			if(ioctx.SenseBuffer[0] == SCSI_SENSE_DESCRITOR_FMT)
+			{
+				if( (SCSI_SENSE_ATA_DESC == ioctx.SenseBuffer[8]) && (SCSI_SENSE_ATA_DESC_LEN == ioctx.SenseBuffer[9]) )				
+				{
+					//Check for Host Managed Sig. 
+					if ( ( ioctx.SenseBuffer[13] == 0x01)  // Sec. Cnt Field. 
+							&& (ioctx.SenseBuffer[15] == 0x01) // LBA Lo/
+							&& ( ioctx.SenseBuffer[17] == 0xCD) // LBA Mid
+							&& (ioctx.SenseBuffer[19] == 0xAB) ) // LBA Hi
+					{
+					
+							is_ZBD_disk = 1;	
+							#if defined (_GEN_LOG_FILE)
+							GetParentWorker()->GetIOManager()->m_logFile << __FUNCTION__ << " : Host MANAGED Device" << spec.name << endl;
+							#endif
+					}
+				}
+			}
+
 		}
-		else
-		{
-		}
+
 	}
 	return result; 
 }
@@ -2670,7 +2715,7 @@ bool TargetDisk::IssueATAIDentify( )
 		
 	ioctx.sptd.Cdb[2] = 0x08 | 0x06; //SAT_T_DIR_DATA_IN;
 	ioctx.sptd.Cdb[6] = 0x01; //1 sec. to make some chipsets happy. 
-	ioctx.sptd.Cdb[14] = 0xEC;
+	ioctx.sptd.Cdb[14] = ATA_IDENTIFY;
 	if (SendIoControl(spec.name, IOCTL_SCSI_PASS_THROUGH_DIRECT, &ioctx.sptd, sizeof(ioctx), &ioctx.sptd, sizeof(ioctx)))
 	{
 		if(ioctx.sptd.ScsiStatus)
@@ -2702,7 +2747,7 @@ bool TargetDisk::IssueATAIDentify( )
 		atapt->DataBufferOffset = sizeof(ATA_PASS_THROUGH_EX) + 4 ;
 		atapt->TimeOutValue = 5;			
 		
-		atapt->CurrentTaskFile[6] = 0xEC;		
+		atapt->CurrentTaskFile[6] = ATA_IDENTIFY;		
 
 		if (SendIoControl(spec.name, IOCTL_ATA_PASS_THROUGH, cmdBuff,sz, cmdBuff, sz))
 		{

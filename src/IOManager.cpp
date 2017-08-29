@@ -1477,16 +1477,21 @@ int Manager::AddZBDTarget(char * tgt_name)
 {
 	int i = 0; 
 
+	cout << __FUNCTION__ << ": Adding " << tgt_name << endl; 
+
 	for (vector<ZBDTarget>::iterator it = m_ZBDTgts.begin(); it != m_ZBDTgts.end(); ++it)
 	{
+		//cout << __FUNCTION__ << ": Comparing " << (*it).GetName() << " to " << tgt_name << " with sizof()=" << sizeof(tgt_name) << endl; 
 		//If it is the right ZBD target
-		if (memcmp( (*it).GetName(),tgt_name,sizeof(tgt_name)) == 0)
+		//if (memcmp( (*it).GetName(),tgt_name,sizeof(tgt_name)) == 0)
+		if (strcmp( (*it).GetName(),tgt_name) == 0)
 		{
 			//Do we need to reset the list? i.e. start of a new test?
 			if ((*it).need_reset)
 			{
 				(*it).InitZBDData();
 			}
+			cout << __FUNCTION__ << ": Found " << (*it).GetName() << " as " << tgt_name << " at vector location " << i << endl; 
 			return i;
 		}
 		i++;

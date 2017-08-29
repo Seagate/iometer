@@ -180,7 +180,7 @@ void ZBDTarget::UpdateZoneInformation(DWORD idx, DWORD request_size)
 #if defined (_GEN_LOG_FILE)
 	if(IoMgr != NULL)
 	{
-		IoMgr->m_logFile <<  __FUNCTION__ << " : updated zone " << idx << " size " << request_size << endl;
+		IoMgr->m_logFile <<  __FUNCTION__ << " : updated zone " << idx << " size " << dec << request_size << endl;
 	}
 #endif
 	
@@ -232,14 +232,25 @@ int ZBDTarget::SetZBDSeqWp(DWORDLONG& offset, int& zone_index)
 		}
 		else
 		{
+			//In a mixed read/write seq/rand waiting on the offset can cause a live deadlock. 
+			//Because the offset gets added to with reads and in some cases the 
+			//next sequential write to be in a zone may not be at an offset with an open zone. 
+			//So we just pick the last zone used. 
+			m_mutex.lock();
+			zone_index = m_zone_index;
+			//zone_index = ::rand() % m_max_open_zones;
+			//Fix Me: IDENTIFY_BUFFER_SIZE to be true logical sector size from drive. 			
+			offset= m_zones[zone_index].band_write_ptr * IDENTIFY_BUFFER_SIZE;						
+			m_zones[zone_index].pending++;
+			m_zones[zone_index].used++;
+			status = 0;
+			m_mutex.unlock();
 #if defined (_GEN_LOG_FILE)
 			if(IoMgr != NULL)
 			{
-				IoMgr->m_logFile << __FUNCTION__ << "  , offset , " << hex << "0x" << offset << "zone index " << zone_index << " WARN: waiting max zones " <<  endl;
-				//Sleep(RETRY_DELAY);
-				Sleep(1000);
+				IoMgr->m_logFile << __FUNCTION__ << "  , offset , " << hex << "0x" << offset << " zone index " << zone_index << endl;
 			}
-#endif
+#endif			
 		}
 
 	} while(status);
