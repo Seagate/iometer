@@ -30,7 +30,7 @@ namespace std {
 #endif
 using namespace std;
 
-#define ZBD_SMR_TARGETS 2
+#define MAX_ZBD_TARGETS 2
 
 class Manager;
 
