@@ -94,7 +94,7 @@
 #define		VERSION_DEBUG	""
 #endif
 
-#define		STX_VERSION		" STX v2.5 TB2"
+#define		STX_VERSION		" STX v2.7"
 
 
 #if defined (__cplusplus)
