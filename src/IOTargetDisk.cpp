@@ -2000,7 +2000,7 @@ void TargetDisk::Seek(BOOL random, DWORD request_size, DWORD user_alignment, DWO
 		if( (is_write) && (is_ZBD_disk) )
 		{			
 			if(ZBD_tgt_idx >= 0)			
-				GetParentWorker()->GetIOManager()->m_ZBDTgts[ZBD_tgt_idx].SetZBDSeqWp(offset, ZBD_tgt_zone_index);			
+				GetParentWorker()->GetIOManager()->m_ZBDTgts[ZBD_tgt_idx].SetZBDSeqWp(offset, ZBD_tgt_zone_index, request_size);			
 			//TODO: Current design doesn't allow for error condition. 
 		}
 		else
@@ -2218,15 +2218,16 @@ ReturnVal TargetDisk::Write(LPVOID buffer, Transaction * trans)
 #endif
 
 #if _DETAILS
-	cout << "Writing " << dec <<  trans->size << " bytes to disk : " << spec.name << "   Accessing : " << dec << offset << hex << "  0x" << offset << endl;
+	cout << "Writing " << trans->size << " bytes to disk : " << spec.name
+	    << endl << "   Accessing : " << dec << offset << hex << "  0x" << offset << endl;
 #endif
 #if defined (_GEN_LOG_FILE)
 	if(GetParentWorker() != NULL)
 	{
 		if(GetParentWorker()->GetIOManager()->m_logFile.is_open())
 		{
-			GetParentWorker()->GetIOManager()->m_logFile <<  __FUNCTION__ << " : Writing " << dec << trans->size << " bytes to disk : " << spec.name
-			<< "   Accessing : " << dec << offset << hex << " 0x" << offset << " LBA: " << dec << offset/512 << hex << " 0x" << offset/512 << endl;
+			GetParentWorker()->GetIOManager()->m_logFile <<  __FUNCTION__ << " : Writing " << trans->size << " bytes to disk : " << spec.name
+			<< endl << "   Accessing : " << dec << offset << hex << " 0x" << offset << " LBA: " << dec << offset/512 << hex << " 0x" << offset/512 << endl;
 		}
 	}
 #endif

@@ -43,6 +43,7 @@ typedef struct _ZBD_BAND_DESC {
 	uint64_t	band_write_ptr;
 	uint64_t	optional_band_id;
 	int32_t		pending;
+	DWORD		last_request_size;
 	uint32_t	used;
 } ZBD_BAND_DESC;
 typedef vector<ZBD_BAND_DESC> ZBD_BANDS;
@@ -59,7 +60,7 @@ class ZBDTarget {
 		void InitZBDData();
 		void ClearZBDData();		
 		void UpdateZoneInformation(DWORD idx, DWORD request_size);
-		int SetZBDSeqWp(DWORDLONG& offset, int& zone_index);
+		int SetZBDSeqWp(DWORDLONG& offset, int& zone_index,  DWORD request_size);
 		int GetZBDRandWp(DWORDLONG& offset, int& zone_index);
 		//void AcquireLock() { m_mutex.lock(); }
 		//void ReleaseLock() { m_mutex.unlock(); }

@@ -186,7 +186,7 @@ void ZBDTarget::UpdateZoneInformation(DWORD idx, DWORD request_size)
 	
 }
 
-int ZBDTarget::SetZBDSeqWp(DWORDLONG& offset, int& zone_index)
+int ZBDTarget::SetZBDSeqWp(DWORDLONG& offset, int& zone_index, DWORD request_size)
 {
 	int status = 1; 
 	vector<DWORD>::iterator ittr; 
@@ -205,9 +205,15 @@ int ZBDTarget::SetZBDSeqWp(DWORDLONG& offset, int& zone_index)
 				m_mutex.lock();
 				//Fix IDENTIFY_BUFFER_SIZE to be true logical sector size from drive. 			
 				offset= m_zones[zone_index].band_write_ptr * IDENTIFY_BUFFER_SIZE;
+				//Check if already writes pending i.e. queue depth is more than 0 
+				if (m_zones[zone_index].pending > 0)
+				{
+					offset += (m_zones[zone_index].last_request_size * m_zones[zone_index].pending );
+				}
 
 				m_zone_index = zone_index;
 				m_zones[zone_index].pending++;
+				m_zones[zone_index].last_request_size = request_size;
 				m_zones[zone_index].used++;
 				status = 0;
 				m_mutex.unlock();
@@ -223,9 +229,15 @@ int ZBDTarget::SetZBDSeqWp(DWORDLONG& offset, int& zone_index)
 			m_mutex.lock();
 			//Fix IDENTIFY_BUFFER_SIZE to be true logical sector size from drive. 			
 			offset= m_zones[zone_index].band_write_ptr * IDENTIFY_BUFFER_SIZE;
+			//Check if already writes pending i.e. queue depth is more than 0 
+			if (m_zones[zone_index].pending > 0)
+			{
+				offset += (m_zones[zone_index].last_request_size * m_zones[zone_index].pending );
+			}
 			m_open_zone_list.push_back(zone_index);
 			m_zone_index = zone_index;
 			m_zones[zone_index].pending++;
+			m_zones[zone_index].last_request_size = request_size;
 			m_zones[zone_index].used++;
 			status = 0;
 			m_mutex.unlock();
@@ -240,8 +252,15 @@ int ZBDTarget::SetZBDSeqWp(DWORDLONG& offset, int& zone_index)
 			zone_index = m_zone_index;
 			//zone_index = ::rand() % m_max_open_zones;
 			//Fix Me: IDENTIFY_BUFFER_SIZE to be true logical sector size from drive. 			
-			offset= m_zones[zone_index].band_write_ptr * IDENTIFY_BUFFER_SIZE;						
+			offset= m_zones[zone_index].band_write_ptr * IDENTIFY_BUFFER_SIZE;
+			//Check if already writes pending i.e. queue depth is more than 0 
+			if (m_zones[zone_index].pending > 0)
+			{
+				offset += (m_zones[zone_index].last_request_size * m_zones[zone_index].pending );
+			}
+
 			m_zones[zone_index].pending++;
+			m_zones[zone_index].last_request_size = request_size;
 			m_zones[zone_index].used++;
 			status = 0;
 			m_mutex.unlock();
